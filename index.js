@@ -68,6 +68,10 @@ app.get('/api/files', (req, res) => {
     }));
     res.json(safeFiles);
 });
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
 
 // 2. POST /api/upload - Upload a file with password
 app.post('/api/upload', async (req, res) => {
@@ -196,3 +200,5 @@ app.listen(PORT, () => {
     console.log(`- Storage: Cloudinary`);
     console.log(`- API Ready: GET /api/files | POST /api/upload | POST /api/file/:id/download`);
 });
+
+
