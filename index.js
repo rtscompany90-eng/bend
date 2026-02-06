@@ -68,10 +68,6 @@ app.get('/api/files', (req, res) => {
     }));
     res.json(safeFiles);
 });
-app.get("/health", (req, res) => {
-  res.status(200).send("OK");
-});
-
 
 // 2. POST /api/upload - Upload a file with password
 app.post('/api/upload', async (req, res) => {
@@ -99,7 +95,8 @@ app.post('/api/upload', async (req, res) => {
             originalName: file.name,
             cloudId: uploadResult.public_id,
             url: uploadResult.secure_url,
-            mimeType: file.mimetype,
+            resourceType: uploadResult.resource_type || 'auto',
+            mimeType: file.mimetype || 'application/octet-stream',
             size: file.size,
             password: hashedPassword,
             timestamp: Date.now()
@@ -109,9 +106,9 @@ app.post('/api/upload', async (req, res) => {
         db.push(newFile);
         writeDb(db);
 
-        console.log("File saved to DB. ID:", newFile.id);
+        console.log(`File saved to DB. ID: ${newFile.id}, Type: ${newFile.resourceType}`);
         res.status(201).json({
-            message: 'File uploaded to Cloudinary and password protected.',
+            message: 'File uploaded and protected.',
             fileId: newFile.id
         });
     } catch (err) {
@@ -120,47 +117,72 @@ app.post('/api/upload', async (req, res) => {
     }
 });
 
-// 3. POST /api/file/:id/download - Verify password and Get URL
-app.post('/api/file/:id/download', async (req, res) => {
+// 3. POST /api/files/:id/download - Verify password and Get URL (Supports both singular and plural)
+app.post(['/api/file/:id/download', '/api/files/:id/download'], async (req, res) => {
     const { id } = req.params;
     const { password } = req.body;
 
+    console.log(`Download attempt for file ID: ${id}`);
+
     if (!password) {
-        return res.status(400).json({ error: 'Password is required to unlock this file.' });
+        return res.status(400).json({ error: 'Password is required.' });
     }
 
     const db = readDb();
     const file = db.find(f => f.id === id);
 
     if (!file) {
+        console.error(`File not found in DB: ${id}`);
         return res.status(404).json({ error: 'File not found.' });
     }
 
     try {
+        console.log(`Verifying password for: ${file.originalName}`);
         const isMatch = await bcrypt.compare(password, file.password);
+
         if (isMatch) {
-            // Fetch the file from Cloudinary and stream it to the client
-            // This ensures the frontend doesn't need to change its blob handling
+            console.log("Password verified. Starting stream...");
+
+            // For files that might have been uploaded before the resourceType change
+            const resourceType = file.resourceType || 'auto';
+            const fileUrl = file.url;
+
+            if (!fileUrl) {
+                console.error("No URL found for file in DB");
+                return res.status(500).json({ error: "File URL missing in database." });
+            }
+
             const response = await axios({
                 method: 'get',
-                url: file.url,
-                responseType: 'stream'
+                url: fileUrl,
+                responseType: 'stream',
+                timeout: 30000 // 30 second timeout for Cloudinary fetch
             });
 
             res.setHeader('Content-Type', file.mimeType);
             res.setHeader('Content-Disposition', `attachment; filename="${file.originalName}"`);
+
             response.data.pipe(res);
+
+            response.data.on('error', (err) => {
+                console.error("Stream error:", err);
+                if (!res.headersSent) {
+                    res.status(500).send("Error streaming file.");
+                }
+            });
+
         } else {
+            console.warn(`Invalid password for file: ${file.originalName}`);
             res.status(401).json({ error: 'Incorrect password. Access denied.' });
         }
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Internal validation error.' });
+        console.error("Download process error:", err);
+        res.status(500).json({ error: 'Internal processing error: ' + err.message });
     }
 });
 
-// 4. DELETE /api/file/:id - Remove file from Cloudinary and metadata
-app.delete('/api/file/:id', async (req, res) => {
+// 4. DELETE /api/files/:id - Remove file from Cloudinary and metadata (Supports both singular and plural)
+app.delete(['/api/file/:id', '/api/files/:id'], async (req, res) => {
     const { id } = req.params;
     const db = readDb();
     const fileIndex = db.findIndex(f => f.id === id);
@@ -200,5 +222,3 @@ app.listen(PORT, () => {
     console.log(`- Storage: Cloudinary`);
     console.log(`- API Ready: GET /api/files | POST /api/upload | POST /api/file/:id/download`);
 });
-
-
